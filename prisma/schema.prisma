@@ -1,0 +1,335 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  PLAYER
+  ORGANIZER
+  ADMIN
+}
+
+enum OrgStatus {
+  PENDING
+  APPROVED
+  SUSPENDED
+}
+
+enum LeagueStatus {
+  DRAFT
+  UPCOMING
+  OPEN
+  IN_PLAY
+  CLOSED
+}
+
+enum RosterStatus {
+  PENDING_PAYMENT
+  ACTIVE
+  WAITLIST
+  REMOVED
+  REFUNDED
+}
+
+enum RosterSource {
+  ORDER
+  COMP
+  MANUAL
+  FREE
+}
+
+enum PaymentStatus {
+  UNPAID
+  PENDING
+  PAID
+  COMP
+  REFUNDED
+  DISPUTED
+  FAILED
+}
+
+enum GameStatus {
+  SCHEDULED
+  CANCELLED
+}
+
+enum SheetStatus {
+  OPEN
+  PENDING
+  CONFIRMED
+}
+
+enum DisputeStatus {
+  NONE
+  OPEN
+  WON
+  LOST
+}
+
+model User {
+  id                String        @id @default(cuid())
+  email             String        @unique
+  name              String
+  passwordHash      String
+  role              UserRole      @default(PLAYER)
+  displayName       String        @default("")
+  skill             String        @default("social")
+  partOfTown        String        @default("")
+  phone             String        @default("")
+  sharePhone        Boolean       @default(false)
+  emailReminders    Boolean       @default(true)
+  emailHostUpdates  Boolean       @default(true)
+  emailScores       Boolean       @default(true)
+  isTestData        Boolean       @default(false)
+  organizationId    String?
+  organization      Organization? @relation("OrgMembers", fields: [organizationId], references: [id])
+  ownedOrganizations Organization[] @relation("OrgOwner")
+  rosters           Roster[]
+  hostedGames       Game[]        @relation("GameHost")
+  attendances       Attendee[]
+  scoreEntries      ScoreEntry[]
+  adjustments       Adjustment[]  @relation("AdjustmentPlayer")
+  adjustmentsMade   Adjustment[]  @relation("AdjustmentAuthor")
+  corrections       Correction[]
+  createdAt         DateTime      @default(now())
+}
+
+model Organization {
+  id                  String           @id @default(cuid())
+  name                String
+  slug                String           @unique
+  isHome              Boolean          @default(false)
+  status              OrgStatus        @default(PENDING)
+  ownerId             String
+  owner               User             @relation("OrgOwner", fields: [ownerId], references: [id])
+  members             User[]           @relation("OrgMembers")
+  stripeAccountId     String?          @unique
+  cardPaymentsStatus  String           @default("inactive")
+  detailsSubmitted    Boolean          @default(false)
+  isTestData          Boolean          @default(false)
+  leagues             League[]
+  ledger              FeeLedgerEntry[]
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+}
+
+model League {
+  id              String       @id @default(cuid())
+  organizationId  String
+  organization    Organization @relation(fields: [organizationId], references: [id])
+  title           String
+  slug            String       @unique
+  description     String       @default("")
+  startDate       DateTime     @db.Date
+  endDate         DateTime     @db.Date
+  entryFeeCents   Int
+  capacity        Int          @default(0)
+  venueCity       String
+  venueState      String
+  venueZip        String       @default("")
+  status          LeagueStatus @default(DRAFT)
+  isTestData      Boolean      @default(false)
+  rosters         Roster[]
+  games           Game[]
+  adjustments     Adjustment[]
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  @@index([organizationId, status])
+  @@index([venueState, venueCity])
+}
+
+model Roster {
+  id                      String         @id @default(cuid())
+  leagueId                String
+  league                  League         @relation(fields: [leagueId], references: [id], onDelete: Cascade)
+  userId                  String
+  user                    User           @relation(fields: [userId], references: [id])
+  status                  RosterStatus   @default(PENDING_PAYMENT)
+  source                  RosterSource   @default(ORDER)
+  paymentStatus           PaymentStatus  @default(UNPAID)
+  entryFeeCents           Int
+  bookingFeeCents         Int            @default(0)
+  totalCents              Int            @default(0)
+  stripeCheckoutSessionId String?        @unique
+  stripePaymentIntentId   String?
+  stripeChargeId          String?
+  checkoutIntegrationId   String?
+  checkoutAttempt         Int            @default(0)
+  legacyOrderId           Int?
+  isTestData              Boolean        @default(false)
+  ledger                  FeeLedgerEntry?
+  createdAt               DateTime       @default(now())
+  updatedAt               DateTime       @updatedAt
+
+  @@unique([leagueId, userId])
+  @@index([paymentStatus])
+}
+
+model FeeLedgerEntry {
+  id                 String        @id @default(cuid())
+  rosterId           String        @unique
+  roster             Roster        @relation(fields: [rosterId], references: [id], onDelete: Cascade)
+  organizationId     String
+  organization       Organization  @relation(fields: [organizationId], references: [id])
+  grossCents         Int
+  entryFeeCents      Int
+  platformFeeCents   Int
+  refundedEntryCents Int           @default(0)
+  disputeStatus      DisputeStatus @default(NONE)
+  currency           String        @default("usd")
+  isTestData         Boolean       @default(false)
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  @@index([organizationId])
+}
+
+model StripeEvent {
+  id          String   @id
+  type        String
+  processedAt DateTime @default(now())
+}
+
+model Game {
+  id          String     @id @default(cuid())
+  leagueId    String
+  league      League     @relation(fields: [leagueId], references: [id], onDelete: Cascade)
+  hostId      String
+  host        User       @relation("GameHost", fields: [hostId], references: [id])
+  startAt     DateTime
+  timeZone    String     @default("America/Denver")
+  venue       String     @default("")
+  address     String     @default("")
+  city        String     @default("")
+  state       String     @default("")
+  zip         String     @default("")
+  partOfTown  String     @default("")
+  roundType   String     @default("standard")
+  notes       String     @default("")
+  tablesCount Int        @default(1)
+  status      GameStatus @default(SCHEDULED)
+  isTestData  Boolean    @default(false)
+  attendees   Attendee[]
+  sheets      ScoreSheet[]
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@index([leagueId, startAt])
+  @@index([city, startAt])
+}
+
+model Attendee {
+  id        String   @id @default(cuid())
+  gameId    String
+  game      Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  tableNo   Int      @default(1)
+  source    String   @default("self")
+  createdAt DateTime @default(now())
+
+  @@unique([gameId, userId])
+}
+
+model ScoreSheet {
+  id            String       @id @default(cuid())
+  gameId        String
+  game          Game         @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  tableNo       Int
+  status        SheetStatus  @default(OPEN)
+  noshows       Json         @default("{}")
+  confirmedById String?
+  confirmedAt   DateTime?
+  entries       ScoreEntry[]
+  hands         OfficialHand[]
+  corrections   Correction[]
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  @@unique([gameId, tableNo])
+}
+
+model ScoreEntry {
+  id         String     @id @default(cuid())
+  sheetId    String
+  sheet      ScoreSheet @relation(fields: [sheetId], references: [id], onDelete: Cascade)
+  userId     String
+  user       User       @relation(fields: [userId], references: [id])
+  handNo     Int
+  outcome    String     @default("")
+  handValue  Int        @default(0)
+  selfPicked Boolean    @default(false)
+  jokerless  Boolean    @default(false)
+  threw      Boolean    @default(false)
+  dead       Boolean    @default(false)
+  updatedAt  DateTime   @updatedAt
+
+  @@unique([sheetId, userId, handNo])
+}
+
+model OfficialHand {
+  id           String     @id @default(cuid())
+  sheetId      String
+  sheet        ScoreSheet @relation(fields: [sheetId], references: [id], onDelete: Cascade)
+  handNo       Int
+  winnerId     String     @default("")
+  handValue    Int        @default(0)
+  selfPicked   Boolean    @default(false)
+  jokerless    Boolean    @default(false)
+  discarderId  String     @default("")
+  deadHands    String     @default("")
+
+  @@unique([sheetId, handNo])
+}
+
+model Adjustment {
+  id          String   @id @default(cuid())
+  leagueId    String
+  league      League   @relation(fields: [leagueId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User     @relation("AdjustmentPlayer", fields: [userId], references: [id])
+  points      Int
+  note        String   @default("")
+  createdById String
+  createdBy   User     @relation("AdjustmentAuthor", fields: [createdById], references: [id])
+  createdAt   DateTime @default(now())
+
+  @@index([leagueId])
+}
+
+model Correction {
+  id         String     @id @default(cuid())
+  sheetId    String
+  sheet      ScoreSheet @relation(fields: [sheetId], references: [id], onDelete: Cascade)
+  gameId     String
+  userId     String
+  user       User       @relation(fields: [userId], references: [id])
+  note       String
+  status     String     @default("open")
+  createdAt  DateTime   @default(now())
+  resolvedAt DateTime?
+}
+
+model NewsletterSubscriber {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  source    String   @default("homepage")
+  ipHash    String   @default("")
+  createdAt DateTime @default(now())
+}
+
+model MailLog {
+  id        String   @id @default(cuid())
+  mailKey   String   @unique
+  type      String
+  userId    String   @default("")
+  email     String   @default("")
+  status    String   @default("queued")
+  body      String   @default("")
+  createdAt DateTime @default(now())
+}

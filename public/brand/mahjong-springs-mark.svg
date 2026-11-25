@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="186 204 230 230" role="img" aria-label="Mahjong Springs"><title>Mahjong Springs</title>
+<g id="tile" transform="translate(-8 11)">
+  <rect x="233.5" y="213.5" width="150" height="189" rx="12.5" fill="#FCF3EA" stroke="#F27BA1" stroke-width="4.5"/>
+  <g stroke-linecap="round" stroke-linejoin="round">
+    <path d="M263 379 C 275 357, 287 339, 300 329 C 316 317, 341 300, 364 286" fill="none" stroke="#2F6E47" stroke-width="5"/>
+    <path d="M263 379 C 275 357, 287 339, 300 329 C 316 317, 341 300, 364 286" fill="none" stroke="#7DB98A" stroke-width="2.2"/>
+    <path d="M276 356 l6 2.5 M326 311 l5 3.5" stroke="#2F6E47" stroke-width="1.5"/>
+    <g fill="#7DB98A" stroke="#2F6E47" stroke-width="1.6">
+      <path d="M343 301 C 340 287, 344 275, 353 266 C 357 280, 352 292, 343 301 Z"/>
+      <path d="M347 298 C 352 287, 361 280, 372 278 C 368 289, 359 296, 347 298 Z"/>
+      <path d="M349 301 C 359 299, 369 302, 375 310 C 365 312, 355 309, 349 301 Z"/>
+      <path d="M318 318 C 309 331, 307 348, 311 366 C 321 352, 323 335, 318 318 Z"/>
+      <path d="M321 317 C 323 334, 330 350, 343 361 C 345 344, 336 329, 321 317 Z"/>
+      <path d="M324 315 C 337 322, 349 334, 355 349 C 341 346, 330 333, 324 315 Z"/>
+      <path d="M327 313 C 340 314, 353 320, 361 332 C 347 334, 335 327, 327 313 Z"/>
+    </g>
+  </g>
+  <g stroke="#1B2A5E" stroke-width="2" stroke-linejoin="round" stroke-linecap="round">
+    <path id="bodyfill" d="M327 250 C 323 244, 313 241, 306 245 C 298 250, 291 260, 285 272 C 279 284, 272 298, 266 310 L 247 341 C 245 346, 249 350, 253 348 L 272 326 C 282 322, 292 323, 300 321 C 314 316, 326 304, 330 290 C 334 277, 334 265, 331 257 Z" fill="#FFFFFF" stroke="none"/>
+    <path d="M324 246 C 318 241, 311 241, 306 245 C 298 250, 291 260, 285 272 C 279 284, 272 298, 266 310 L 257 325 C 272 318, 284 306, 293 293 C 301 280, 306 266, 306 254 C 310 248, 317 246, 324 246 Z" fill="#34508F" stroke="none"/>
+    <path d="M305 270 C 303 289, 291 305, 270 322 C 288 318, 301 308, 308 296 C 312 287, 310 277, 305 270 Z" fill="#E2735E" stroke="none"/>
+    <path d="M306 247 C 307 264, 302 280, 293 293 C 284 306, 272 318, 257 326" fill="none" stroke-width="1.3"/>
+    <path d="M327 250 C 323 244, 313 241, 306 245 C 298 250, 291 260, 285 272 C 279 284, 272 298, 266 310 L 247 341 C 245 346, 249 350, 253 348 L 272 326 C 282 322, 292 323, 300 321 C 314 316, 326 304, 330 290 C 334 277, 334 265, 331 257" fill="none"/>
+    <path d="M263 328 L 251 343 M268 326 L 255 345" fill="none" stroke-width="1.1"/>
+    <path d="M327 251 L 338 249.5 L 330 256" fill="#F27BA1" stroke-width="1.4"/>
+    <circle cx="317.5" cy="254" r="2.3" fill="#1B2A5E" stroke="none"/>
+    <path d="M295 322 C 296 325, 296 328, 294 331 M302 320 C 304 323, 305 326, 304 329" fill="none" stroke-width="1.5"/>
+  </g>
+</g>
+</svg>
