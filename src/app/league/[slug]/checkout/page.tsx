@@ -7,7 +7,7 @@ import { formatUsd, BOOKING_FEE_CENTS } from "@/lib/fees";
 import { stripeOrNull, stripePublishableKey } from "@/lib/stripe-server";
 import { CheckoutEmbed } from "@/components/checkout-embed";
 import { beginCheckout } from "@/server/actions";
-import { checkoutSessionIsOpen, registrationAlreadyPaid } from "@/lib/stripe-flow";
+import { checkoutSessionIsOpen, checkoutTestModeNotice, registrationAlreadyPaid } from "@/lib/stripe-flow";
 
 export const metadata: Metadata = { title: "Checkout", robots: { index: false } };
 
@@ -51,7 +51,7 @@ export default async function CheckoutPage({
       <header className="page-hero">
         <div className="eyebrow">Checkout</div>
         <h1>{league.title}</h1>
-        {league.isTestData ? <p>Test data. This checkout is a sample and will not charge a real card until Stripe test keys are connected.</p> : null}
+        {checkoutTestModeNotice(publishable) ? <p>{checkoutTestModeNotice(publishable)}</p> : null}
       </header>
       <div className="content-area"><div className="ms-wrap checkout-grid">
         <aside className="panel fee-box">

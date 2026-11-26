@@ -7,6 +7,7 @@ import {
   accountIdFromThinNotification,
   detailsSubmittedFromAccount,
   isThinEventPayload,
+  paymentStatusAfterDispute,
 } from "@/lib/stripe-flow";
 
 export async function refreshOrganizationStripe(organizationId: string) {
@@ -46,15 +47,18 @@ export async function fulfillPaidSession(session: Stripe.Checkout.Session) {
   const roster = await prisma.roster.findUnique({ where: { id: rosterId }, include: { league: true } });
   if (!roster || roster.paymentStatus === "PAID" || roster.paymentStatus === "COMP") return;
 
-  const activeCount = await prisma.roster.count({
-    where: { leagueId: roster.leagueId, status: "ACTIVE" },
-  });
-  const cap = roster.league.capacity;
-  const waitlisted = cap > 0 && activeCount >= cap;
   const paymentIntentId = typeof session.payment_intent === "string" ? session.payment_intent : session.payment_intent?.id;
   const ledger = feeLedgerForPayment(roster.entryFeeCents);
 
   await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "League" WHERE id = ${roster.leagueId} FOR UPDATE`;
+    const current = await tx.roster.findUnique({ where: { id: roster.id } });
+    if (!current || current.paymentStatus === "PAID" || current.paymentStatus === "COMP") return;
+    const activeCount = await tx.roster.count({
+      where: { leagueId: roster.leagueId, status: "ACTIVE" },
+    });
+    const cap = roster.league.capacity;
+    const waitlisted = cap > 0 && activeCount >= cap;
     await tx.roster.update({
       where: { id: roster.id },
       data: {
@@ -123,10 +127,13 @@ export async function recordDispute(paymentIntentId: string | null, status: "OPE
   if (!paymentIntentId) return;
   const roster = await prisma.roster.findFirst({ where: { stripePaymentIntentId: paymentIntentId }, include: { ledger: true } });
   if (!roster?.ledger) return;
-  await prisma.feeLedgerEntry.update({ where: { id: roster.ledger.id }, data: { disputeStatus: status } });
-  if (status === "OPEN") {
-    await prisma.roster.update({ where: { id: roster.id }, data: { paymentStatus: "DISPUTED" } });
-  }
+  await prisma.$transaction([
+    prisma.feeLedgerEntry.update({ where: { id: roster.ledger.id }, data: { disputeStatus: status } }),
+    prisma.roster.update({
+      where: { id: roster.id },
+      data: { paymentStatus: paymentStatusAfterDispute(status, roster.paymentStatus) as "PAID" | "DISPUTED" | "REFUNDED" },
+    }),
+  ]);
 }
 
 export async function constructWebhookEvent(payload: string, signature: string | null) {
@@ -149,22 +156,36 @@ export function parseThinEventNotification(payload: string, signature: string | 
   return stripe.parseEventNotification(payload, signature, secret);
 }
 
+async function claimStripeEvent(id: string, type: string): Promise<boolean> {
+  try {
+    await prisma.stripeEvent.create({ data: { id, type } });
+    return true;
+  } catch (error) {
+    const code = typeof error === "object" && error && "code" in error ? String(error.code) : "";
+    if (code === "P2002") return false;
+    throw error;
+  }
+}
+
+async function releaseStripeEvent(id: string) {
+  await prisma.stripeEvent.delete({ where: { id } }).catch(() => undefined);
+}
+
 export async function handleThinNotification(notification: {
   id: string;
   type: string;
   related_object?: { id?: string } | { url?: string } | null;
 }) {
+  if (!(await claimStripeEvent(notification.id, notification.type))) return;
   try {
-    await prisma.stripeEvent.create({ data: { id: notification.id, type: notification.type } });
+    const accountId = accountIdFromThinNotification(notification);
+    if (!accountId) return;
+    const org = await prisma.organization.findUnique({ where: { stripeAccountId: accountId } });
+    if (org) await refreshOrganizationStripe(org.id);
   } catch (error) {
-    const code = typeof error === "object" && error && "code" in error ? String(error.code) : "";
-    if (code === "P2002") return;
+    await releaseStripeEvent(notification.id);
     throw error;
   }
-  const accountId = accountIdFromThinNotification(notification);
-  if (!accountId) return;
-  const org = await prisma.organization.findUnique({ where: { stripeAccountId: accountId } });
-  if (org) await refreshOrganizationStripe(org.id);
 }
 
 /** Route a raw webhook body to the snapshot parser or the v2 thin-event parser. */
@@ -180,14 +201,16 @@ export async function receiveStripeWebhook(payload: string, signature: string | 
 }
 
 export async function handleStripeEvent(event: Stripe.Event) {
+  if (!(await claimStripeEvent(event.id, event.type))) return;
   try {
-    await prisma.stripeEvent.create({ data: { id: event.id, type: event.type } });
+    await applyStripeEvent(event);
   } catch (error) {
-    const code = typeof error === "object" && error && "code" in error ? String(error.code) : "";
-    if (code === "P2002") return;
+    await releaseStripeEvent(event.id);
     throw error;
   }
+}
 
+async function applyStripeEvent(event: Stripe.Event) {
   if (event.type === "checkout.session.completed" || event.type === "checkout.session.async_payment_succeeded") {
     const session = event.data.object as Stripe.Checkout.Session;
     if (session.payment_status === "paid") await fulfillPaidSession(session);

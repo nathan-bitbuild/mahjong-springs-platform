@@ -59,3 +59,37 @@ export function registrationAlreadyPaid(paymentStatus: string | null | undefined
 export function canOpenStripeDashboard(cardPaymentsStatus: string | null | undefined): boolean {
   return cardPaymentsStatus === "active";
 }
+
+export const SEAT_HOLD_MS = 30 * 60 * 1000;
+
+/** Active roster rows hold a seat. A checkout hold expires so an abandoned session cannot block the league. */
+export function rosterHoldsSeat(row: { status: string; updatedAt: Date }, now: Date, holdMs = SEAT_HOLD_MS): boolean {
+  if (row.status === "ACTIVE") return true;
+  if (row.status === "PENDING_PAYMENT") return now.getTime() - row.updatedAt.getTime() < holdMs;
+  return false;
+}
+
+/** A comp must not erase a captured Stripe payment. */
+export function compWouldErasePayment(paymentStatus: string): boolean {
+  return paymentStatus === "PAID" || paymentStatus === "DISPUTED" || paymentStatus === "PENDING";
+}
+
+export function paymentStatusAfterDispute(status: "OPEN" | "WON" | "LOST", current: string): string {
+  if (current === "REFUNDED") return current;
+  if (status === "WON") return "PAID";
+  return "DISPUTED";
+}
+
+export function checkoutTestModeNotice(publishableKey: string | null | undefined): string | null {
+  if (publishableKey?.startsWith("pk_test_")) {
+    return "Stripe test mode. Card 4242 4242 4242 4242 completes a test payment and does not move real money.";
+  }
+  return null;
+}
+
+export function stripeReviewMessage(input: { detailsSubmitted: boolean; cardPaymentsStatus: string }): string | null {
+  if (input.detailsSubmitted && input.cardPaymentsStatus !== "active") {
+    return "Stripe is reviewing your details. This usually takes a few minutes.";
+  }
+  return null;
+}

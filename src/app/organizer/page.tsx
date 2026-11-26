@@ -4,7 +4,7 @@ import { prisma } from "@/lib/db";
 import { redirect } from "next/navigation";
 import { openStripeDashboard, startStripeOnboarding } from "@/server/actions";
 import { formatUsd } from "@/lib/fees";
-import { canOpenStripeDashboard } from "@/lib/stripe-flow";
+import { canOpenStripeDashboard, stripeReviewMessage } from "@/lib/stripe-flow";
 
 export default async function OrganizerHome({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
   const session = await auth();
@@ -37,7 +37,7 @@ export default async function OrganizerHome({ searchParams }: { searchParams: Pr
             {org.status === "PENDING" ? <p>Mahjong Springs reviews new organizers before their leagues can be public.</p> : null}
             {org.status === "SUSPENDED" ? <p>This organization is suspended. Public leagues are unpublished.</p> : null}
             <h2>Stripe</h2>
-            <p>Card payments: <b>{org.cardPaymentsStatus}</b></p>
+            {stripeReviewMessage(org) ? <p>{stripeReviewMessage(org)}</p> : <p>Card payments: <b>{org.cardPaymentsStatus}</b></p>}
             <p>Payouts go from Stripe to your bank. Mahjong Springs never holds the entry fee. You pay Stripe’s processing fee. You own entry-fee refunds and chargebacks in your Stripe Dashboard.</p>
             <form action={startStripeOnboarding}><button className="btn btn-solid" type="submit">{org.stripeAccountId ? "Continue Stripe setup" : "Start Stripe onboarding"}</button></form>
             {canOpenStripeDashboard(org.cardPaymentsStatus) ? <form action={openStripeDashboard}><button className="btn" type="submit">Open Stripe Dashboard</button></form> : null}

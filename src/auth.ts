@@ -1,7 +1,9 @@
 import NextAuth from "next-auth";
 import Credentials from "next-auth/providers/credentials";
+import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/db";
+import { apiPathNeedsInternalSlash, pagePathNeedsTrailingSlash } from "@/lib/http";
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   trustHost: true,
@@ -50,6 +52,16 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     },
     authorized({ auth: session, request }) {
       const path = request.nextUrl.pathname;
+      if (apiPathNeedsInternalSlash(path)) {
+        const url = new URL(request.url);
+        url.pathname = `${path}/`;
+        return NextResponse.rewrite(url);
+      }
+      if (pagePathNeedsTrailingSlash(path)) {
+        const url = new URL(request.url);
+        url.pathname = `${path}/`;
+        return NextResponse.redirect(url, 308);
+      }
       const admin = path.startsWith("/admin");
       const organizer = path.startsWith("/organizer");
       const player = ["/account", "/my-league", "/my-profile", "/host-a-game", "/directory"].some(

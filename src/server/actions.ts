@@ -18,7 +18,7 @@ import { requireStripe, stripeOrNull, stripePublishableKey } from "@/lib/stripe-
 import { slugify, siteUrl } from "@/lib/constants";
 import { DEFAULT_SCORING, reconcileEntries, type PlayerEntry, type ScoreOutcome } from "@/lib/scoring";
 import { paymentsReady, refreshOrganizationStripe } from "@/server/payments";
-import { canOpenStripeDashboard, checkoutSessionIsOpen, registrationAlreadyPaid } from "@/lib/stripe-flow";
+import { canOpenStripeDashboard, checkoutSessionIsOpen, compWouldErasePayment, registrationAlreadyPaid, rosterHoldsSeat, SEAT_HOLD_MS } from "@/lib/stripe-flow";
 import { zonedLocalToUtc } from "@/lib/time";
 import { createHash } from "node:crypto";
 
@@ -96,7 +96,7 @@ async function organizerOrg() {
   if (user.role !== "ORGANIZER" && user.role !== "ADMIN") redirect("/account/");
   if (!user.organization) throw new Error("This account is not attached to an organization.");
   if (user.organization.status === "SUSPENDED") {
-    throw new Error("This organization is suspended. Leagues cannot be changed until Mahjong Springs reinstates it.");
+    redirect("/organizer/?error=" + encodeURIComponent("This organization is suspended. Leagues cannot be changed until Mahjong Springs reinstates it."));
   }
   return { user, org: user.organization };
 }
@@ -262,6 +262,10 @@ export async function compEntry(formData: FormData) {
   const email = String(formData.get("email") ?? "").trim().toLowerCase();
   const player = await prisma.user.findUnique({ where: { email } });
   if (!player) redirect(`/organizer/leagues/${league.id}/?error=${encodeURIComponent("No account uses that email yet.")}`);
+  const already = await prisma.roster.findUnique({ where: { leagueId_userId: { leagueId: league.id, userId: player.id } } });
+  if (already && compWouldErasePayment(already.paymentStatus)) {
+    redirect(`/organizer/leagues/${league.id}/?error=${encodeURIComponent("This player already has a payment in progress or on file. Refund it before adding a comp.")}`);
+  }
   const ledger = feeLedgerForComp(league.entryFeeCents);
   await prisma.roster.upsert({
     where: { leagueId_userId: { leagueId: league.id, userId: player.id } },
@@ -307,16 +311,15 @@ export async function refundEntry(formData: FormData) {
       `/organizer/leagues/${roster.leagueId}/?error=${encodeURIComponent(stripeFailureMessage(error, "Stripe could not refund this entry fee."))}`,
     );
   }
-  if (roster.ledger) {
-    await prisma.feeLedgerEntry.update({
-      where: { id: roster.ledger.id },
-      data: { refundedEntryCents: roster.entryFeeCents },
-    });
-  }
-  await prisma.roster.update({
-    where: { id: roster.id },
-    data: { paymentStatus: "REFUNDED", status: "REFUNDED" },
-  });
+  await prisma.$transaction([
+    ...(roster.ledger
+      ? [prisma.feeLedgerEntry.update({ where: { id: roster.ledger.id }, data: { refundedEntryCents: roster.entryFeeCents } })]
+      : []),
+    prisma.roster.update({
+      where: { id: roster.id },
+      data: { paymentStatus: "REFUNDED", status: "REFUNDED" },
+    }),
+  ]);
   redirect(`/organizer/leagues/${roster.leagueId}/?saved=1`);
 }
 
@@ -414,39 +417,54 @@ export async function beginCheckout(formData: FormData) {
       if (isNextRedirect(error)) throw error;
     }
   }
-  if (league.capacity > 0) {
-    const taken = await prisma.roster.count({
-      where: { leagueId: league.id, status: { in: ["ACTIVE", "PENDING_PAYMENT"] } },
-    });
-    if (taken >= league.capacity && existing?.status !== "PENDING_PAYMENT") {
-      await prisma.roster.upsert({
-        where: { leagueId_userId: { leagueId: league.id, userId: user.id } },
-        create: {
-          leagueId: league.id,
-          userId: user.id,
-          status: "WAITLIST",
-          source: "FREE",
-          paymentStatus: "UNPAID",
-          entryFeeCents: league.entryFeeCents,
-        },
-        update: { status: "WAITLIST" },
-      });
-      redirect(`/league/${league.slug}/?waitlist=1`);
-    }
-  }
-  const roster = existing
-    ? await prisma.roster.update({
-        where: { id: existing.id },
-        data: {
-          status: "PENDING_PAYMENT",
-          paymentStatus: "PENDING",
-          entryFeeCents: league.entryFeeCents,
-          bookingFeeCents: BOOKING_FEE_CENTS,
-          totalCents: checkoutTotalCents(league.entryFeeCents),
-          checkoutIntegrationId: existing.checkoutIntegrationId ?? integrationIdentifier(),
-        },
-      })
-    : await prisma.roster.create({
+  const now = new Date();
+  const holdSince = new Date(now.getTime() - SEAT_HOLD_MS);
+  const keepsHold = existing ? rosterHoldsSeat(existing, now) && existing.status === "PENDING_PAYMENT" : false;
+  let roster;
+  try {
+    const reserved = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "League" WHERE id = ${league.id} FOR UPDATE`;
+      if (league.capacity > 0) {
+        const taken = await tx.roster.count({
+          where: {
+            leagueId: league.id,
+            ...(existing ? { id: { not: existing.id } } : {}),
+            OR: [
+              { status: "ACTIVE" },
+              { status: "PENDING_PAYMENT", updatedAt: { gte: holdSince } },
+            ],
+          },
+        });
+        if (taken >= league.capacity && !keepsHold) {
+          await tx.roster.upsert({
+            where: { leagueId_userId: { leagueId: league.id, userId: user.id } },
+            create: {
+              leagueId: league.id,
+              userId: user.id,
+              status: "WAITLIST",
+              source: "FREE",
+              paymentStatus: "UNPAID",
+              entryFeeCents: league.entryFeeCents,
+            },
+            update: { status: "WAITLIST", paymentStatus: "UNPAID" },
+          });
+          return null;
+        }
+      }
+      if (existing) {
+        return tx.roster.update({
+          where: { id: existing.id },
+          data: {
+            status: "PENDING_PAYMENT",
+            paymentStatus: "PENDING",
+            entryFeeCents: league.entryFeeCents,
+            bookingFeeCents: BOOKING_FEE_CENTS,
+            totalCents: checkoutTotalCents(league.entryFeeCents),
+            checkoutIntegrationId: existing.checkoutIntegrationId ?? integrationIdentifier(),
+          },
+        });
+      }
+      return tx.roster.create({
         data: {
           leagueId: league.id,
           userId: user.id,
@@ -460,6 +478,17 @@ export async function beginCheckout(formData: FormData) {
           isTestData: league.isTestData,
         },
       });
+    });
+    if (!reserved) redirect(`/league/${league.slug}/?waitlist=1`);
+    roster = reserved;
+  } catch (error) {
+    if (isNextRedirect(error)) throw error;
+    const code = typeof error === "object" && error && "code" in error ? String(error.code) : "";
+    if (code !== "P2002") throw error;
+    const raced = await prisma.roster.findUnique({ where: { leagueId_userId: { leagueId: league.id, userId: user.id } } });
+    if (!raced || registrationAlreadyPaid(raced.paymentStatus)) redirect(`/league/${league.slug}/?saved=1`);
+    roster = raced;
+  }
   const attempt = roster.checkoutAttempt + 1;
   const built = buildDirectChargeCheckout({
     leagueTitle: league.title,
@@ -541,19 +570,25 @@ export async function joinGame(formData: FormData) {
   if (!game || game.status !== "SCHEDULED" || game.startAt < new Date()) redirect("/find-a-table/?error=closed");
   const roster = await prisma.roster.findUnique({ where: { leagueId_userId: { leagueId: game.leagueId, userId: user.id } } });
   if (!roster || roster.status !== "ACTIVE") redirect(`/league/${game.league.slug}/?error=roster`);
-  if (game.attendees.some((a) => a.userId === user.id)) redirect(`/games/${game.id}/`);
   const cap = game.tablesCount * 4;
-  if (game.attendees.length >= cap) redirect(`/games/${game.id}/?error=full`);
-  const counts = new Map<number, number>();
-  for (const attendee of game.attendees) counts.set(attendee.tableNo, (counts.get(attendee.tableNo) ?? 0) + 1);
-  let tableNo = 1;
-  for (let i = 1; i <= game.tablesCount; i += 1) {
-    if ((counts.get(i) ?? 0) < 4) {
-      tableNo = i;
-      break;
+  const joined = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "Game" WHERE id = ${game.id} FOR UPDATE`;
+    const attendees = await tx.attendee.findMany({ where: { gameId: game.id } });
+    if (attendees.some((attendee) => attendee.userId === user.id)) return "already" as const;
+    if (attendees.length >= cap) return "full" as const;
+    const counts = new Map<number, number>();
+    for (const attendee of attendees) counts.set(attendee.tableNo, (counts.get(attendee.tableNo) ?? 0) + 1);
+    let tableNo = 1;
+    for (let i = 1; i <= game.tablesCount; i += 1) {
+      if ((counts.get(i) ?? 0) < 4) {
+        tableNo = i;
+        break;
+      }
     }
-  }
-  await prisma.attendee.create({ data: { gameId: game.id, userId: user.id, tableNo, source: "self" } });
+    await tx.attendee.create({ data: { gameId: game.id, userId: user.id, tableNo, source: "self" } });
+    return "joined" as const;
+  });
+  if (joined === "full") redirect(`/games/${game.id}/?error=full`);
   redirect(`/games/${game.id}/?joined=1`);
 }
 
@@ -677,8 +712,16 @@ export async function requestCorrection(formData: FormData) {
   const user = await requireSessionUser();
   const gameId = String(formData.get("gameId") ?? "");
   const note = String(formData.get("note") ?? "").trim();
-  const sheet = await prisma.scoreSheet.findFirst({ where: { gameId, tableNo: Number(formData.get("tableNo") || 1) } });
-  if (!sheet || note.length < 3) redirect(`/games/${gameId}/`);
+  const game = await prisma.game.findUnique({
+    where: { id: gameId },
+    include: { attendees: true, league: true },
+  });
+  const sheet = game
+    ? await prisma.scoreSheet.findFirst({ where: { gameId, tableNo: Number(formData.get("tableNo") || 1) } })
+    : null;
+  const seated = game?.attendees.some((attendee) => attendee.userId === user.id) ?? false;
+  const manages = user.role === "ADMIN" || (user.role === "ORGANIZER" && user.organizationId === game?.league.organizationId);
+  if (!game || !sheet || note.length < 3 || (!seated && game.hostId !== user.id && !manages)) redirect(`/games/${gameId}/`);
   await prisma.correction.create({ data: { sheetId: sheet.id, gameId, userId: user.id, note } });
   redirect(`/games/${gameId}/?correction=1`);
 }

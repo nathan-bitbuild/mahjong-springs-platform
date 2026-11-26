@@ -56,7 +56,8 @@ Prefer a restricted API key (`rk_test_`) for `STRIPE_SECRET_KEY`, with permissio
 
 **Snapshot endpoint** (v1 events, Connect):
 
-- URL: `https://www.mahjongsprings.com/api/stripe/webhook`
+- URL to register, with no trailing slash: `https://<your-host>/api/stripe/webhook`
+- The slashed URL also reaches the handler. Neither URL 308-redirects. Register the unslashed URL.
 - Local: `stripe listen --forward-to localhost:3000/api/stripe/webhook`
 - Payload style: Snapshot
 - Listen to events on Connected accounts: **on**
@@ -67,7 +68,8 @@ These are parsed with `stripe.webhooks.constructEvent`. Direct charges live on t
 
 **Thin endpoint** (Accounts v2):
 
-- URL: `https://www.mahjongsprings.com/api/stripe/webhook/thin`
+- URL to register, with no trailing slash: `https://<your-host>/api/stripe/webhook/thin`
+- The slashed URL also reaches the handler and does not redirect.
 - Payload style: Thin
 - Events: `v2.core.account.updated`, `v2.core.account[configuration.merchant].updated`, `v2.core.account[configuration.merchant].capability_status_updated`, `v2.core.account[requirements].updated`, `v2.core.account[identity].updated`
 - Secret: `STRIPE_THIN_WEBHOOK_SECRET`
@@ -98,7 +100,32 @@ Organizers onboard once through a Stripe-hosted Account Link. Checkout stays on 
 3. Set `NEXT_PUBLIC_GA_MEASUREMENT_ID`. The current property is `G-L8C5HYQ4K6`.
 4. Set the Stripe test keys, `STRIPE_WEBHOOK_SECRET`, and `STRIPE_THIN_WEBHOOK_SECRET`. Add both webhook URLs from the Stripe section above. Switch to live keys only after Connect is approved and you have reviewed a live test payment. This repo’s code still rejects live keys until that guard is removed on purpose.
 5. Set `CRON_SECRET` and schedule `POST /api/cron/reminders` (Vercel Cron or an external scheduler).
-6. Run `npx prisma db push` against the production database, then deploy. Do not run the local seed against production.
+6. Apply the committed Prisma migration with `npx prisma migrate deploy`. Do not run `prisma db push` on each boot, and do not run the local seed against production.
+
+## Docker / Coolify
+
+`Dockerfile` is a multi-stage Node 22 build. The image uses Next.js standalone output, runs as a non-root user, and applies migrations with `prisma migrate deploy` when the container starts.
+
+Coolify build arguments (they are baked into the client bundle):
+
+- `NEXT_PUBLIC_SITE_URL`
+- `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` (`pk_test_...`)
+- `NEXT_PUBLIC_GA_MEASUREMENT_ID` (optional; the current property is `G-L8C5HYQ4K6`)
+
+Runtime environment: `DATABASE_URL`, `AUTH_SECRET`, `AUTH_URL`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_THIN_WEBHOOK_SECRET`, `CRON_SECRET`.
+
+Register these webhook URLs exactly, with no trailing slash:
+
+- `https://<your-host>/api/stripe/webhook`
+- `https://<your-host>/api/stripe/webhook/thin`
+
+A database that was created with `prisma db push` already has the tables and no `_prisma_migrations` row. Before the first `migrate deploy` against that database, mark the baseline as applied or the init migration will try to create tables that exist:
+
+```bash
+npx prisma migrate resolve --applied 20261126000000_init
+```
+
+A brand-new empty database should skip that command and just run `prisma migrate deploy`.
 
 ## DNS cutover
 

@@ -4,10 +4,17 @@ import {
   accountIdFromThinNotification,
   canOpenStripeDashboard,
   checkoutSessionIsOpen,
+  checkoutTestModeNotice,
+  compWouldErasePayment,
   detailsSubmittedFromAccount,
   isThinEventPayload,
+  paymentStatusAfterDispute,
   registrationAlreadyPaid,
+  rosterHoldsSeat,
+  SEAT_HOLD_MS,
+  stripeReviewMessage,
 } from "@/lib/stripe-flow";
+import { apiPathNeedsInternalSlash, pagePathNeedsTrailingSlash } from "@/lib/http";
 
 const thinAccount = JSON.stringify({
   id: "evt_thin",
@@ -96,6 +103,40 @@ describe("onboarding and checkout guards", () => {
     expect(registrationAlreadyPaid("PAID")).toBe(true);
     expect(registrationAlreadyPaid("COMP")).toBe(true);
     expect(registrationAlreadyPaid("PENDING")).toBe(false);
+  });
+
+  it("keeps API routes free of a trailing-slash redirect and still slashes pages", () => {
+    expect(apiPathNeedsInternalSlash("/api/stripe/webhook")).toBe(true);
+    expect(apiPathNeedsInternalSlash("/api/stripe/webhook/")).toBe(false);
+    expect(apiPathNeedsInternalSlash("/api/stripe/webhook/thin")).toBe(true);
+    expect(pagePathNeedsTrailingSlash("/api/stripe/webhook")).toBe(false);
+    expect(pagePathNeedsTrailingSlash("/leagues")).toBe(true);
+    expect(pagePathNeedsTrailingSlash("/leagues/")).toBe(false);
+    expect(pagePathNeedsTrailingSlash("/favicon.ico")).toBe(false);
+  });
+
+  it("shows a test-mode checkout notice only for pk_test_ keys", () => {
+    expect(checkoutTestModeNotice("pk_test_123")).toMatch(/test mode/i);
+    expect(checkoutTestModeNotice(null)).toBeNull();
+    expect(checkoutTestModeNotice("")).toBeNull();
+  });
+
+  it("explains Stripe review while card payments are not active", () => {
+    expect(stripeReviewMessage({ detailsSubmitted: true, cardPaymentsStatus: "restricted" })).toMatch(/reviewing your details/);
+    expect(stripeReviewMessage({ detailsSubmitted: true, cardPaymentsStatus: "active" })).toBeNull();
+    expect(stripeReviewMessage({ detailsSubmitted: false, cardPaymentsStatus: "restricted" })).toBeNull();
+  });
+
+  it("expires abandoned checkout holds and refuses to comp over a payment", () => {
+    const now = new Date("2026-11-26T12:00:00.000Z");
+    expect(rosterHoldsSeat({ status: "ACTIVE", updatedAt: new Date(0) }, now)).toBe(true);
+    expect(rosterHoldsSeat({ status: "PENDING_PAYMENT", updatedAt: now }, now)).toBe(true);
+    expect(rosterHoldsSeat({ status: "PENDING_PAYMENT", updatedAt: new Date(now.getTime() - SEAT_HOLD_MS - 1) }, now)).toBe(false);
+    expect(compWouldErasePayment("PAID")).toBe(true);
+    expect(compWouldErasePayment("COMP")).toBe(false);
+    expect(paymentStatusAfterDispute("WON", "DISPUTED")).toBe("PAID");
+    expect(paymentStatusAfterDispute("LOST", "DISPUTED")).toBe("DISPUTED");
+    expect(paymentStatusAfterDispute("WON", "REFUNDED")).toBe("REFUNDED");
   });
 
   it("offers the Stripe Dashboard only after card payments are active", () => {

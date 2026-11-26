@@ -2,6 +2,8 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   trailingSlash: true,
+  skipTrailingSlashRedirect: true,
+  output: "standalone",
   poweredByHeader: false,
   async redirects() {
     return [
