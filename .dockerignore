@@ -1,0 +1,13 @@
+node_modules
+.next
+.git
+.env
+.env.*
+!.env.example
+coverage
+npm-debug.log*
+*.tsbuildinfo
+tests
+README.md
+.cursor
+agent-transcripts
