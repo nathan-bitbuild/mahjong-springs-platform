@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { redirect } from "next/navigation";
 import { openStripeDashboard, startStripeOnboarding } from "@/server/actions";
 import { formatUsd } from "@/lib/fees";
+import { canOpenStripeDashboard } from "@/lib/stripe-flow";
 
 export default async function OrganizerHome({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
   const session = await auth();
@@ -39,7 +40,7 @@ export default async function OrganizerHome({ searchParams }: { searchParams: Pr
             <p>Card payments: <b>{org.cardPaymentsStatus}</b></p>
             <p>Payouts go from Stripe to your bank. Mahjong Springs never holds the entry fee. You pay Stripe’s processing fee. You own entry-fee refunds and chargebacks in your Stripe Dashboard.</p>
             <form action={startStripeOnboarding}><button className="btn btn-solid" type="submit">{org.stripeAccountId ? "Continue Stripe setup" : "Start Stripe onboarding"}</button></form>
-            {org.stripeAccountId ? <form action={openStripeDashboard}><button className="btn" type="submit">Open Stripe Dashboard</button></form> : null}
+            {canOpenStripeDashboard(org.cardPaymentsStatus) ? <form action={openStripeDashboard}><button className="btn" type="submit">Open Stripe Dashboard</button></form> : null}
             <p>Entry fees recorded here: {formatUsd(paid._sum.entryFeeCents ?? 0)}. Entry fees refunded: {formatUsd(paid._sum.refundedEntryCents ?? 0)}.</p>
           </aside>
           <div>

@@ -2,6 +2,12 @@ import type Stripe from "stripe";
 import { prisma } from "@/lib/db";
 import { BOOKING_FEE_CENTS, cardPaymentsActive, feeLedgerForPayment } from "@/lib/fees";
 import { requireStripe, stripeOrNull } from "@/lib/stripe-server";
+import {
+  accountIdFromSnapshotEvent,
+  accountIdFromThinNotification,
+  detailsSubmittedFromAccount,
+  isThinEventPayload,
+} from "@/lib/stripe-flow";
 
 export async function refreshOrganizationStripe(organizationId: string) {
   const org = await prisma.organization.findUnique({ where: { id: organizationId } });
@@ -9,14 +15,20 @@ export async function refreshOrganizationStripe(organizationId: string) {
   const stripe = stripeOrNull();
   if (!stripe) return org;
   const account = await stripe.v2.core.accounts.retrieve(org.stripeAccountId, {
-    include: ["configuration.merchant"],
+    include: ["configuration.merchant", "requirements"],
   });
   const status = account.configuration?.merchant?.capabilities?.card_payments?.status ?? "inactive";
+  const entries = account.requirements?.entries ?? [];
   return prisma.organization.update({
     where: { id: org.id },
     data: {
       cardPaymentsStatus: status,
-      detailsSubmitted: status === "active" || status === "pending" || status === "restricted",
+      detailsSubmitted: detailsSubmittedFromAccount({
+        cardPaymentsStatus: status,
+        summaryStatus: account.requirements?.summary?.minimum_deadline?.status,
+        entryStatuses: entries.map((entry) => entry.minimum_deadline?.status),
+        requirementsKnown: Boolean(account.requirements),
+      }),
     },
   });
 }
@@ -125,6 +137,48 @@ export async function constructWebhookEvent(payload: string, signature: string |
   return stripe.webhooks.constructEvent(payload, signature, secret);
 }
 
+function thinWebhookSecret(): string {
+  return process.env.STRIPE_THIN_WEBHOOK_SECRET?.trim() || "";
+}
+
+export function parseThinEventNotification(payload: string, signature: string | null) {
+  const secret = thinWebhookSecret();
+  if (!secret) throw new Error("STRIPE_THIN_WEBHOOK_SECRET is not set.");
+  if (!signature) throw new Error("Missing Stripe-Signature header.");
+  const stripe = requireStripe();
+  return stripe.parseEventNotification(payload, signature, secret);
+}
+
+export async function handleThinNotification(notification: {
+  id: string;
+  type: string;
+  related_object?: { id?: string } | { url?: string } | null;
+}) {
+  try {
+    await prisma.stripeEvent.create({ data: { id: notification.id, type: notification.type } });
+  } catch (error) {
+    const code = typeof error === "object" && error && "code" in error ? String(error.code) : "";
+    if (code === "P2002") return;
+    throw error;
+  }
+  const accountId = accountIdFromThinNotification(notification);
+  if (!accountId) return;
+  const org = await prisma.organization.findUnique({ where: { stripeAccountId: accountId } });
+  if (org) await refreshOrganizationStripe(org.id);
+}
+
+/** Route a raw webhook body to the snapshot parser or the v2 thin-event parser. */
+export async function receiveStripeWebhook(payload: string, signature: string | null) {
+  if (isThinEventPayload(payload)) {
+    const notification = parseThinEventNotification(payload, signature);
+    await handleThinNotification(notification);
+    return { kind: "thin" as const };
+  }
+  const event = await constructWebhookEvent(payload, signature);
+  await handleStripeEvent(event);
+  return { kind: "snapshot" as const };
+}
+
 export async function handleStripeEvent(event: Stripe.Event) {
   try {
     await prisma.stripeEvent.create({ data: { id: event.id, type: event.type } });
@@ -161,9 +215,8 @@ export async function handleStripeEvent(event: Stripe.Event) {
     await recordDispute(paymentIntentId, dispute.status === "won" ? "WON" : "LOST");
     return;
   }
-  if (event.type === "account.updated" || event.type.startsWith("v2.core.account")) {
-    const accountId = event.account;
-    if (!accountId) return;
+  const accountId = accountIdFromSnapshotEvent(event);
+  if (accountId) {
     const org = await prisma.organization.findUnique({ where: { stripeAccountId: accountId } });
     if (org) await refreshOrganizationStripe(org.id);
   }

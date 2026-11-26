@@ -51,16 +51,30 @@ Use a [Stripe sandbox](https://docs.stripe.com/sandboxes) (a test environment) o
 Prefer a restricted API key (`rk_test_`) for `STRIPE_SECRET_KEY`, with permission to create Accounts v2 connected accounts, Account Links, Checkout Sessions, and refunds, and to read connected-account capabilities. Store it as a sensitive environment variable. Do not commit it.
 
 1. Create a Stripe platform account and request Connect approval. Direct charges and `fees_collector: stripe` need the platform’s Connect settings to allow connected accounts to pay Stripe fees (managed risk).
-2. Set `STRIPE_SECRET_KEY`, `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY`, and `STRIPE_WEBHOOK_SECRET`.
-3. Forward webhooks while developing:
+2. Set `STRIPE_SECRET_KEY` and `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` (`pk_test_`). Checkout does not create a Checkout Session when the publishable key is missing.
+3. Create two webhook destinations. They use different signing secrets.
 
-```bash
-stripe listen --forward-to localhost:3000/api/stripe/webhook
-```
+**Snapshot endpoint** (v1 events, Connect):
 
-The endpoint verifies the `Stripe-Signature` header and stores each event id so a delivery is applied once. Fulfillment runs on `checkout.session.completed` and `checkout.session.async_payment_succeeded` only when `payment_status` is `paid`. The return page can confirm the same session by reading it back from Stripe; it does not trust the redirect alone.
+- URL: `https://www.mahjongsprings.com/api/stripe/webhook`
+- Local: `stripe listen --forward-to localhost:3000/api/stripe/webhook`
+- Payload style: Snapshot
+- Listen to events on Connected accounts: **on**
+- Events: `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `charge.refunded`, `charge.dispute.created`, `charge.dispute.closed`, `account.updated`
+- Secret: `STRIPE_WEBHOOK_SECRET`
 
-Listen for events on connected accounts. The handler also records `charge.refunded`, `charge.dispute.created`, `charge.dispute.closed`, and account capability updates.
+These are parsed with `stripe.webhooks.constructEvent`. Direct charges live on the connected account, so the connected-account listener is required or payment events never arrive. Fulfillment runs only when `payment_status` is `paid`. Each event id is stored once. The return page reads the Checkout Session back from Stripe; it does not trust the redirect by itself.
+
+**Thin endpoint** (Accounts v2):
+
+- URL: `https://www.mahjongsprings.com/api/stripe/webhook/thin`
+- Payload style: Thin
+- Events: `v2.core.account.updated`, `v2.core.account[configuration.merchant].updated`, `v2.core.account[configuration.merchant].capability_status_updated`, `v2.core.account[requirements].updated`, `v2.core.account[identity].updated`
+- Secret: `STRIPE_THIN_WEBHOOK_SECRET`
+
+Thin payloads are `v2.core.event` notifications. `constructEvent` rejects them. They are parsed with `stripe.parseEventNotification`, and the connected account id is `related_object.id` (there is no `event.account`). The handler then re-reads the v2 account. A new account starts `restricted` with `requirements_past_due`, so onboarding is not treated as finished until card payments are `active` or no requirement is `currently_due` or `past_due`.
+
+The snapshot URL also accepts a thin body and verifies it with `STRIPE_THIN_WEBHOOK_SECRET`, so one listener can be split later without dropping events. The thin URL rejects snapshot bodies.
 
 `POST /api/cron/reminders` with `Authorization: Bearer $CRON_SECRET` records 24-hour table reminders and score reminders. Email delivery is logged in `MailLog` until an SMTP provider is attached. Players who have claimed a seat can download an `.ics` invite that includes the address.
 
@@ -82,7 +96,7 @@ Organizers onboard once through a Stripe-hosted Account Link. Checkout stays on 
 1. Create a Postgres database (Vercel Postgres, Neon, or similar) and set `DATABASE_URL`.
 2. Set `AUTH_SECRET` (a long random string), `AUTH_URL`, and `NEXT_PUBLIC_SITE_URL=https://www.mahjongsprings.com`.
 3. Set `NEXT_PUBLIC_GA_MEASUREMENT_ID`. The current property is `G-L8C5HYQ4K6`.
-4. Set the Stripe test keys and `STRIPE_WEBHOOK_SECRET`. Add the live webhook URL `https://www.mahjongsprings.com/api/stripe/webhook` in the Stripe Dashboard, with connected-account events enabled. Switch to live keys only after Connect is approved and you have reviewed a live test payment. This repo’s code still rejects live keys until that guard is removed on purpose.
+4. Set the Stripe test keys, `STRIPE_WEBHOOK_SECRET`, and `STRIPE_THIN_WEBHOOK_SECRET`. Add both webhook URLs from the Stripe section above. Switch to live keys only after Connect is approved and you have reviewed a live test payment. This repo’s code still rejects live keys until that guard is removed on purpose.
 5. Set `CRON_SECRET` and schedule `POST /api/cron/reminders` (Vercel Cron or an external scheduler).
 6. Run `npx prisma db push` against the production database, then deploy. Do not run the local seed against production.
 

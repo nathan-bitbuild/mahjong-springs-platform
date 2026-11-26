@@ -14,13 +14,27 @@ import {
   feeLedgerForComp,
   integrationIdentifier,
 } from "@/lib/fees";
-import { requireStripe, stripeOrNull } from "@/lib/stripe-server";
-import { slugify } from "@/lib/constants";
-import { siteUrl } from "@/lib/constants";
+import { requireStripe, stripeOrNull, stripePublishableKey } from "@/lib/stripe-server";
+import { slugify, siteUrl } from "@/lib/constants";
 import { DEFAULT_SCORING, reconcileEntries, type PlayerEntry, type ScoreOutcome } from "@/lib/scoring";
 import { paymentsReady, refreshOrganizationStripe } from "@/server/payments";
+import { canOpenStripeDashboard, checkoutSessionIsOpen, registrationAlreadyPaid } from "@/lib/stripe-flow";
 import { zonedLocalToUtc } from "@/lib/time";
 import { createHash } from "node:crypto";
+
+function isNextRedirect(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "digest" in error &&
+    String((error as { digest?: unknown }).digest).startsWith("NEXT_REDIRECT")
+  );
+}
+
+function stripeFailureMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message) return error.message;
+  return fallback;
+}
 
 function safeCallback(value: FormDataEntryValue | null, fallback = "/account/") {
   const raw = String(value ?? "");
@@ -285,7 +299,14 @@ export async function refundEntry(formData: FormData) {
     stripeAccountId: org.stripeAccountId,
     rosterId: roster.id,
   });
-  await stripe.refunds.create(built.params, built.options);
+  try {
+    await stripe.refunds.create(built.params, built.options);
+  } catch (error) {
+    if (isNextRedirect(error)) throw error;
+    redirect(
+      `/organizer/leagues/${roster.leagueId}/?error=${encodeURIComponent(stripeFailureMessage(error, "Stripe could not refund this entry fee."))}`,
+    );
+  }
   if (roster.ledger) {
     await prisma.feeLedgerEntry.update({
       where: { id: roster.ledger.id },
@@ -337,17 +358,24 @@ export async function startStripeOnboarding() {
 
 export async function openStripeDashboard() {
   const { org } = await organizerOrg();
-  if (!org.stripeAccountId) redirect("/organizer/?error=Connect%20Stripe%20first");
+  if (!org.stripeAccountId || !canOpenStripeDashboard(org.cardPaymentsStatus)) {
+    redirect(`/organizer/?error=${encodeURIComponent("Finish Stripe onboarding before opening the dashboard. Card payments are not active yet.")}`);
+  }
   const stripe = requireStripe();
   const origin = siteUrl();
-  const link = await stripe.v2.core.accountLinks.create({
-    account: org.stripeAccountId,
-    use_case: {
-      type: "account_dashboard",
-      account_dashboard: { refresh_url: `${origin}/organizer/stripe/refresh/` },
-    },
-  });
-  redirect(link.url);
+  try {
+    const link = await stripe.v2.core.accountLinks.create({
+      account: org.stripeAccountId,
+      use_case: {
+        type: "account_dashboard",
+        account_dashboard: { refresh_url: `${origin}/organizer/stripe/refresh/` },
+      },
+    });
+    redirect(link.url);
+  } catch (error) {
+    if (isNextRedirect(error)) throw error;
+    redirect(`/organizer/?error=${encodeURIComponent(stripeFailureMessage(error, "Stripe could not open the dashboard."))}`);
+  }
 }
 
 export async function beginCheckout(formData: FormData) {
@@ -362,9 +390,29 @@ export async function beginCheckout(formData: FormData) {
   if (!paymentsReady(league.organization.cardPaymentsStatus) || !league.organization.stripeAccountId) {
     redirect(`/league/${league.slug}/?error=${encodeURIComponent("This organizer has not finished Stripe setup, so checkout is not open.")}`);
   }
+  if (!stripePublishableKey() || !stripeOrNull()) {
+    redirect(
+      `/league/${league.slug}/checkout/?error=${encodeURIComponent("Stripe checkout is not configured. Set NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY to a pk_test_ key and STRIPE_SECRET_KEY to an rk_test_ or sk_test_ key. No Checkout Session was created.")}`,
+    );
+  }
   const existing = await prisma.roster.findUnique({ where: { leagueId_userId: { leagueId: league.id, userId: user.id } } });
-  if (existing && (existing.status === "ACTIVE" || existing.paymentStatus === "COMP")) {
+  if (existing && registrationAlreadyPaid(existing.paymentStatus)) {
     redirect(`/league/${league.slug}/?saved=1`);
+  }
+  const stripe = requireStripe();
+  if (existing?.stripeCheckoutSessionId) {
+    try {
+      const current = await stripe.checkout.sessions.retrieve(
+        existing.stripeCheckoutSessionId,
+        {},
+        { stripeAccount: league.organization.stripeAccountId },
+      );
+      if (checkoutSessionIsOpen(current.status)) {
+        redirect(`/league/${league.slug}/checkout/`);
+      }
+    } catch (error) {
+      if (isNextRedirect(error)) throw error;
+    }
   }
   if (league.capacity > 0) {
     const taken = await prisma.roster.count({
@@ -412,8 +460,6 @@ export async function beginCheckout(formData: FormData) {
           isTestData: league.isTestData,
         },
       });
-  const stripe = stripeOrNull();
-  if (!stripe) redirect(`/league/${league.slug}/checkout/?unconfigured=1`);
   const attempt = roster.checkoutAttempt + 1;
   const built = buildDirectChargeCheckout({
     leagueTitle: league.title,
@@ -653,6 +699,11 @@ export async function setOrganizerStatus(formData: FormData) {
 
 export async function syncStripeReturn() {
   const { org } = await organizerOrg();
-  await refreshOrganizationStripe(org.id);
+  try {
+    await refreshOrganizationStripe(org.id);
+  } catch (error) {
+    if (isNextRedirect(error)) throw error;
+    redirect(`/organizer/?error=${encodeURIComponent(stripeFailureMessage(error, "Could not refresh Stripe status."))}`);
+  }
   redirect("/organizer/?stripe=1");
 }
